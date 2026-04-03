@@ -149,14 +149,17 @@ export class GmailProvider implements EmailProvider {
     });
   }
 
-  async getLabels(): Promise<EmailLabel[]> {
+  async getLabels(options?: {
+    includeHidden?: boolean;
+  }): Promise<EmailLabel[]> {
     return this.withRateLimitTracking("get-labels", async () => {
       const labels = await getLabels(this.client, { logger: this.logger });
       return (labels || [])
         .filter(
           (label) =>
             label.type === "user" &&
-            label.labelListVisibility !== labelVisibility.labelHide,
+            (options?.includeHidden ||
+              label.labelListVisibility !== labelVisibility.labelHide),
         )
         .map((label) => ({
           id: label.id!,
@@ -357,15 +360,19 @@ export class GmailProvider implements EmailProvider {
     senders: string[],
     ownerEmail: string,
     emailAccountId: string,
-  ): Promise<void> {
+    options?: { continueOnError?: boolean },
+  ): Promise<number> {
     const log = this.logger.with({
       action: "archiveMessagesFromSenders",
       emailAccountId,
       email: ownerEmail,
       sendersCount: senders.length,
     });
+    const continueOnError = options?.continueOnError ?? true;
 
-    if (senders.length === 0) return;
+    if (senders.length === 0) return 0;
+
+    let archivedMessagesCount = 0;
 
     for (const sender of senders) {
       if (!sender) continue;
@@ -389,6 +396,7 @@ export class GmailProvider implements EmailProvider {
 
           if (batchMessageIds.length > 0) {
             await this.archiveMessagesBulk(batchMessageIds);
+            archivedMessagesCount += batchMessageIds.length;
 
             const newThreadIds = Array.from(batchThreadIds).filter(
               (threadId) => !publishedThreadIds.has(threadId),
@@ -426,6 +434,9 @@ export class GmailProvider implements EmailProvider {
             sender,
             error,
           });
+          if (!continueOnError) {
+            throw error;
+          }
           // continue processing remaining pages
           nextPageToken = undefined;
         }
@@ -433,6 +444,7 @@ export class GmailProvider implements EmailProvider {
     }
 
     log.info("Completed bulk archive from senders");
+    return archivedMessagesCount;
   }
 
   private async trashThreadsFromSenders(
@@ -558,6 +570,21 @@ export class GmailProvider implements EmailProvider {
       ownerEmail,
       emailAccountId,
     );
+  }
+
+  async bulkArchiveSenderOrThrow(
+    fromEmail: string,
+    ownerEmail: string,
+    emailAccountId: string,
+  ): Promise<number> {
+    return this.withRateLimitTracking("bulk-archive-sender", async () => {
+      return await this.archiveMessagesFromSenders(
+        [fromEmail],
+        ownerEmail,
+        emailAccountId,
+        { continueOnError: false },
+      );
+    });
   }
 
   async bulkTrashFromSenders(

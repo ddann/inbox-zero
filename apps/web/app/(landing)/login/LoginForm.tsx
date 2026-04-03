@@ -6,10 +6,10 @@ import { useSearchParams } from "next/navigation";
 import { useState } from "react";
 import { Button } from "@/components/Button";
 import { Button as UIButton } from "@/components/ui/button";
-import { SectionDescription } from "@/components/Typography";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogTrigger,
@@ -17,14 +17,16 @@ import {
 import { signIn, signInWithOauth2 } from "@/utils/auth-client";
 import { WELCOME_PATH } from "@/utils/config";
 import { toastError } from "@/components/Toast";
-import { isInternalPath } from "@/utils/path";
+import { normalizeInternalPath } from "@/utils/path";
 import { getPossessiveBrandName } from "@/utils/branding";
+import { AlertBasic } from "@/components/Alert";
+import { createClientLogger } from "@/utils/logger-client";
+
+const logger = createClientLogger("login/LoginForm");
 
 export function LoginForm({
-  showLocalBypass,
   useGoogleOauthEmulator,
 }: {
-  showLocalBypass: boolean;
   useGoogleOauthEmulator: boolean;
 }) {
   const searchParams = useSearchParams();
@@ -33,17 +35,22 @@ export function LoginForm({
 
   const [loadingGoogle, setLoadingGoogle] = useState(false);
   const [loadingMicrosoft, setLoadingMicrosoft] = useState(false);
-  const [loadingLocalBypass, setLoadingLocalBypass] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
 
   const handleGoogleSignIn = async () => {
     setLoadingGoogle(true);
+    setGoogleError(null);
     try {
       if (useGoogleOauthEmulator) {
-        await signInWithOauth2({
+        const result = await signInWithOauth2({
           providerId: "google",
           errorCallbackURL,
           callbackURL,
         });
+        if (!result.url) {
+          throw new Error("Missing Google sign-in redirect URL");
+        }
+        window.location.href = result.url;
       } else {
         await signIn.social({
           provider: "google",
@@ -52,10 +59,12 @@ export function LoginForm({
         });
       }
     } catch (error) {
-      console.error("Error signing in with Google:", error);
+      const description = getSocialSignInErrorMessage(error);
+      logger.error("Error signing in with Google", { error });
+      setGoogleError(description);
       toastError({
         title: "Error signing in with Google",
-        description: "Please try again or contact support",
+        description,
       });
     } finally {
       setLoadingGoogle(false);
@@ -70,40 +79,6 @@ export function LoginForm({
       errorCallbackURL,
       setLoading: setLoadingMicrosoft,
     });
-  };
-
-  const handleLocalBypassSignIn = async () => {
-    setLoadingLocalBypass(true);
-    try {
-      const response = await fetch("/api/auth/sign-in/local-bypass", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({ callbackURL }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Local bypass login failed");
-      }
-
-      const result: { callbackURL?: string } = await response.json();
-
-      window.location.assign(
-        result.callbackURL && isInternalPath(result.callbackURL)
-          ? result.callbackURL
-          : callbackURL,
-      );
-    } catch (error) {
-      console.error("Error signing in with local bypass:", error);
-      toastError({
-        title: "Error bypassing login",
-        description:
-          "Ensure LOCAL_AUTH_BYPASS_ENABLED=true in your local environment.",
-      });
-    } finally {
-      setLoadingLocalBypass(false);
-    }
   };
 
   return (
@@ -127,7 +102,7 @@ export function LoginForm({
           <DialogHeader>
             <DialogTitle>Sign in</DialogTitle>
           </DialogHeader>
-          <SectionDescription>
+          <DialogDescription className="mt-1 text-sm leading-6 text-slate-700 dark:text-foreground">
             {getPossessiveBrandName()} use and transfer of information received
             from Google APIs to any other app will adhere to{" "}
             <a
@@ -137,7 +112,14 @@ export function LoginForm({
               Google API Services User Data
             </a>{" "}
             Policy, including the Limited Use requirements.
-          </SectionDescription>
+          </DialogDescription>
+          {googleError ? (
+            <AlertBasic
+              variant="destructive"
+              title="Failed to start Google sign-in"
+              description={googleError}
+            />
+          ) : null}
           <div>
             <Button loading={loadingGoogle} onClick={handleGoogleSignIn}>
               I agree
@@ -171,23 +153,12 @@ export function LoginForm({
       >
         <Link href="/login/sso">Sign in with SSO</Link>
       </UIButton>
-
-      {showLocalBypass && (
-        <Button
-          size="2xl"
-          color="white"
-          loading={loadingLocalBypass}
-          onClick={handleLocalBypassSignIn}
-        >
-          Bypass login (local only)
-        </Button>
-      )}
     </div>
   );
 }
 
 function getAuthCallbackUrls(next: string | null) {
-  const callbackURL = next && isInternalPath(next) ? next : WELCOME_PATH;
+  const callbackURL = normalizeInternalPath(next) ?? WELCOME_PATH;
   const errorCallbackURL = isOrganizationInvitationPath(callbackURL)
     ? "/login/error?reason=org_invite"
     : "/login/error";
@@ -221,12 +192,21 @@ async function handleSocialSignIn({
       callbackURL,
     });
   } catch (error) {
-    console.error(`Error signing in with ${providerName}:`, error);
+    const description = getSocialSignInErrorMessage(error);
+    logger.error(`Error signing in with ${providerName}`, { error });
     toastError({
       title: `Error signing in with ${providerName}`,
-      description: "Please try again or contact support",
+      description,
     });
   } finally {
     setLoading(false);
   }
+}
+
+function getSocialSignInErrorMessage(error: unknown) {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "Please try again or contact support.";
 }

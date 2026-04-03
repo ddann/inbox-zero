@@ -1,6 +1,7 @@
 import { sso } from "@better-auth/sso";
 import { expo } from "@better-auth/expo";
 import { genericOAuth } from "better-auth/plugins/generic-oauth";
+import type { GenericOAuthConfig } from "better-auth/plugins/generic-oauth";
 import { oAuthProxy } from "better-auth/plugins";
 import { createContact as createLoopsContact } from "@inboxzero/loops";
 import { createContact as createResendContact } from "@inboxzero/resend";
@@ -10,11 +11,10 @@ import { prismaAdapter } from "better-auth/adapters/prisma";
 import { nextCookies } from "better-auth/next-js";
 import { cookies, headers } from "next/headers";
 import { env } from "@/env";
-import { localBypassAuthPlugin } from "@/utils/auth/local-bypass-plugin";
 import {
-  isLocalAuthBypassEnabled,
-  isLocalBypassUserEmail,
-} from "@/utils/auth/local-bypass-config";
+  assertAllowedAuthSignupEmail,
+  isAllowedAuthSignupEmail,
+} from "@/utils/auth-signup-policy";
 import { trackDubSignUp } from "@/utils/dub";
 import {
   isGoogleProvider,
@@ -31,6 +31,11 @@ import {
   isGoogleOauthEmulationEnabled,
 } from "@/utils/google/oauth";
 import { createScopedLogger } from "@/utils/logger";
+import {
+  getMicrosoftOauthDiscoveryUrl,
+  getMicrosoftOauthIssuer,
+  isMicrosoftEmulationEnabled,
+} from "@/utils/microsoft/oauth";
 import { createOutlookClient } from "@/utils/outlook/client";
 import { SCOPES as OUTLOOK_SCOPES } from "@/utils/outlook/scopes";
 import {
@@ -42,6 +47,7 @@ import prisma from "@/utils/prisma";
 
 const logger = createScopedLogger("auth");
 const useGoogleOauthEmulator = isGoogleOauthEmulationEnabled();
+const useMicrosoftOauthEmulator = isMicrosoftEmulationEnabled();
 
 const mobileAuthOrigins = env.MOBILE_AUTH_ORIGIN
   ? [env.MOBILE_AUTH_ORIGIN]
@@ -60,9 +66,21 @@ const googleSocialProvider = !useGoogleOauthEmulator
       }),
     }
   : null;
-const googleOauthPlugin = useGoogleOauthEmulator
-  ? genericOAuth({
-      config: [
+const microsoftSocialProvider = !useMicrosoftOauthEmulator
+  ? {
+      clientId: env.MICROSOFT_CLIENT_ID || "",
+      clientSecret: env.MICROSOFT_CLIENT_SECRET || "",
+      scope: [...OUTLOOK_SCOPES],
+      tenantId: env.MICROSOFT_TENANT_ID,
+      disableIdTokenSignIn: true,
+      ...(env.OAUTH_PROXY_URL && {
+        redirectURI: `${env.OAUTH_PROXY_URL}/api/auth/callback/microsoft`,
+      }),
+    }
+  : null;
+const genericOauthConfig: GenericOAuthConfig[] = [
+  ...(useGoogleOauthEmulator
+    ? [
         {
           providerId: "google",
           discoveryUrl: getGoogleOauthDiscoveryUrl(),
@@ -71,29 +89,42 @@ const googleOauthPlugin = useGoogleOauthEmulator
           clientSecret: env.GOOGLE_CLIENT_SECRET,
           scopes: [...GMAIL_SCOPES],
           pkce: true,
-          accessType: "offline",
-          prompt: "select_account consent",
+          accessType: "offline" as const,
+          prompt: "select_account consent" as const,
           ...(env.OAUTH_PROXY_URL && {
             redirectURI: `${env.OAUTH_PROXY_URL}/api/auth/oauth2/callback/google`,
           }),
         },
-      ],
-    })
-  : null;
+      ]
+    : []),
+  ...(useMicrosoftOauthEmulator
+    ? [
+        {
+          providerId: "microsoft",
+          discoveryUrl: getMicrosoftOauthDiscoveryUrl(),
+          issuer: getMicrosoftOauthIssuer(),
+          clientId: env.MICROSOFT_CLIENT_ID || "",
+          clientSecret: env.MICROSOFT_CLIENT_SECRET || "",
+          scopes: [...OUTLOOK_SCOPES],
+          pkce: true,
+          prompt: "consent" as const,
+          ...(env.OAUTH_PROXY_URL && {
+            redirectURI: `${env.OAUTH_PROXY_URL}/api/auth/oauth2/callback/microsoft`,
+          }),
+        },
+      ]
+    : []),
+];
+const genericOauthPlugin =
+  genericOauthConfig.length > 0
+    ? genericOAuth({
+        config: genericOauthConfig,
+      })
+    : null;
 
 const socialProviders = {
   ...(googleSocialProvider ? { google: googleSocialProvider } : {}),
-  microsoft: {
-    clientId: env.MICROSOFT_CLIENT_ID || "",
-    clientSecret: env.MICROSOFT_CLIENT_SECRET || "",
-    scope: [...OUTLOOK_SCOPES],
-    tenantId: env.MICROSOFT_TENANT_ID,
-    disableIdTokenSignIn: true,
-    // For preview deployments, redirect through staging (which proxies back to preview URL)
-    ...(env.OAUTH_PROXY_URL && {
-      redirectURI: `${env.OAUTH_PROXY_URL}/api/auth/callback/microsoft`,
-    }),
-  },
+  ...(microsoftSocialProvider ? { microsoft: microsoftSocialProvider } : {}),
 };
 
 export const betterAuthConfig = betterAuth({
@@ -134,7 +165,7 @@ export const betterAuthConfig = betterAuth({
       disableImplicitSignUp: false,
       organizationProvisioning: { disabled: true },
     }),
-    ...(googleOauthPlugin ? [googleOauthPlugin] : []),
+    ...(genericOauthPlugin ? [genericOauthPlugin] : []),
     ...(mobileAuthOrigins.length > 0 ? [expo()] : []),
     // OAuth proxy for preview deployments (Google doesn't allow wildcard redirect URIs)
     ...(env.OAUTH_PROXY_URL || env.IS_OAUTH_PROXY_SERVER
@@ -144,7 +175,6 @@ export const betterAuthConfig = betterAuth({
           }),
         ]
       : []),
-    ...(isLocalAuthBypassEnabled() ? [localBypassAuthPlugin()] : []),
     nextCookies(), // Must be last
   ],
   session: {
@@ -155,7 +185,8 @@ export const betterAuthConfig = betterAuth({
     },
     cookieCache: {
       enabled: true,
-      maxAge: 60 * 60 * 24 * 30, // 30 days
+      maxAge: 60 * 5, // 5 minutes — normal sign-out clears the cache cookie immediately;
+      // this TTL only limits exposure for stolen-token scenarios
     },
     expiresIn: 60 * 60 * 24 * 30, // 30 days
     updateAge: 60 * 60 * 24 * 3, // 1 day (every 1 day the session expiration is updated)
@@ -188,9 +219,15 @@ export const betterAuthConfig = betterAuth({
   databaseHooks: {
     user: {
       create: {
-        after: async (user) => {
-          if (isLocalBypassUserEmail(user.email)) return;
+        before: async (user) => {
+          if (isAllowedAuthSignupEmail(user.email)) return;
 
+          logger.warn("Blocked auth sign-up outside configured allowlist", {
+            emailDomain: user.email.split("@")[1]?.toLowerCase(),
+          });
+          assertAllowedAuthSignupEmail(user.email);
+        },
+        after: async (user) => {
           await postSignUp({
             id: user.id,
             email: user.email,

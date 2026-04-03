@@ -140,6 +140,13 @@ export function shouldLearnFromLabelRemoval(systemType: SystemType): boolean {
   return getRuleConfig(systemType).shouldLearn;
 }
 
+export function isEligibleForClassificationFeedback(
+  systemType: SystemType | null | undefined,
+): boolean {
+  if (!systemType) return true;
+  return getRuleConfig(systemType).shouldLearn;
+}
+
 export function getCategoryAction(systemType: SystemType, provider: string) {
   const config = getRuleConfig(systemType);
 
@@ -180,6 +187,7 @@ export function getDefaultActions(
   url: string | null;
   cc: string | null;
   bcc: string | null;
+  messagingChannelId: string | null;
   delayInMinutes: number | null;
   staticAttachments: null;
   createdAt: Date;
@@ -202,6 +210,7 @@ export function getDefaultActions(
     url: string | null;
     cc: string | null;
     bcc: string | null;
+    messagingChannelId: string | null;
     delayInMinutes: number | null;
     staticAttachments: null;
     createdAt: Date;
@@ -223,6 +232,7 @@ export function getDefaultActions(
       url: null,
       cc: null,
       bcc: null,
+      messagingChannelId: null,
       delayInMinutes: null,
       staticAttachments: null,
       createdAt: now,
@@ -243,6 +253,7 @@ export function getDefaultActions(
       url: null,
       cc: null,
       bcc: null,
+      messagingChannelId: null,
       delayInMinutes: null,
       staticAttachments: null,
       createdAt: now,
@@ -265,6 +276,7 @@ export function getDefaultActions(
       url: null,
       cc: null,
       bcc: null,
+      messagingChannelId: null,
       delayInMinutes: null,
       staticAttachments: null,
       createdAt: now,
@@ -287,6 +299,7 @@ export function getDefaultActions(
       url: null,
       cc: null,
       bcc: null,
+      messagingChannelId: null,
       delayInMinutes: null,
       staticAttachments: null,
       createdAt: now,

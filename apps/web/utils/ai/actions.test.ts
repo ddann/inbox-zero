@@ -10,9 +10,13 @@ import {
   resolveDraftAttachments,
   selectDraftAttachmentsForRule,
 } from "@/utils/attachments/draft-attachments";
-import { createScopedLogger } from "@/utils/logger";
 import { getReplyWithConfidence } from "@/utils/redis/reply";
+import {
+  getMessagingRuleNotificationResult,
+  sendMessagingRuleNotification,
+} from "@/utils/messaging/rule-notifications";
 import type { ParsedMessage } from "@/utils/types";
+import { createTestLogger } from "@/__tests__/helpers";
 vi.mock("server-only", () => ({}));
 
 vi.mock("@/utils/redis/reply", () => ({
@@ -27,8 +31,16 @@ vi.mock("@/utils/attachments/draft-attachments", () => ({
   }),
 }));
 
+vi.mock("@/utils/messaging/rule-notifications", () => ({
+  getMessagingRuleNotificationResult: vi.fn().mockResolvedValue({
+    delivered: true,
+    kind: "interactive",
+  }),
+  sendMessagingRuleNotification: vi.fn().mockResolvedValue(true),
+}));
+
 describe("runActionFunction", () => {
-  const logger = createScopedLogger("test");
+  const logger = createTestLogger();
   const email = {
     id: "message-1",
     threadId: "thread-1",
@@ -48,6 +60,10 @@ describe("runActionFunction", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getMessagingRuleNotificationResult).mockResolvedValue({
+      delivered: true,
+      kind: "interactive",
+    });
   });
 
   it("passes resolved drive attachments into draft creation", async () => {
@@ -167,6 +183,214 @@ describe("runActionFunction", () => {
       "user@example.com",
       expect.objectContaining({ id: "executed-rule-1" }),
     );
+  });
+
+  it("sends chat drafts through the messaging notification path", async () => {
+    const client = createMockEmailProvider();
+
+    await runActionFunction({
+      client,
+      email,
+      action: {
+        id: "action-1",
+        type: ActionType.DRAFT_MESSAGING_CHANNEL,
+        messagingChannelId: "channel-1",
+        content: "Draft in chat",
+      },
+      userEmail: "user@example.com",
+      userId: "user-1",
+      emailAccountId: "account-1",
+      executedRule: {
+        id: "executed-rule-1",
+        threadId: "thread-1",
+        emailAccountId: "account-1",
+        ruleId: "rule-1",
+      } as any,
+      logger,
+    });
+
+    expect(sendMessagingRuleNotification).toHaveBeenCalledWith({
+      executedActionId: "action-1",
+      email,
+      logger: expect.anything(),
+    });
+    expect(client.draftEmail).not.toHaveBeenCalled();
+  });
+
+  it("keeps legacy messaging-targeted mailbox drafts on the Slack notification path", async () => {
+    const client = createMockEmailProvider();
+
+    await runActionFunction({
+      client,
+      email,
+      action: {
+        id: "action-1",
+        type: ActionType.DRAFT_EMAIL,
+        messagingChannelId: "channel-1",
+        content: "Draft in chat",
+      },
+      userEmail: "user@example.com",
+      userId: "user-1",
+      emailAccountId: "account-1",
+      executedRule: {
+        id: "executed-rule-1",
+        threadId: "thread-1",
+        emailAccountId: "account-1",
+        ruleId: "rule-1",
+        actionItems: [{ type: ActionType.DRAFT_EMAIL }],
+      } as any,
+      logger,
+    });
+
+    expect(client.draftEmail).not.toHaveBeenCalled();
+  });
+
+  it("falls back to mailbox drafts when legacy chat delivery is unavailable", async () => {
+    const client = createMockEmailProvider();
+    vi.mocked(getMessagingRuleNotificationResult).mockResolvedValueOnce({
+      delivered: false,
+      kind: "none",
+    });
+
+    await runActionFunction({
+      client,
+      email,
+      action: {
+        id: "action-1",
+        type: ActionType.DRAFT_EMAIL,
+        messagingChannelId: "channel-1",
+        content: "Draft in chat",
+      },
+      userEmail: "user@example.com",
+      userId: "user-1",
+      emailAccountId: "account-1",
+      executedRule: {
+        id: "executed-rule-1",
+        threadId: "thread-1",
+        emailAccountId: "account-1",
+        ruleId: "rule-1",
+        actionItems: [{ type: ActionType.DRAFT_EMAIL }],
+      } as any,
+      logger,
+    });
+
+    expect(client.draftEmail).toHaveBeenCalled();
+  });
+
+  it("still creates mailbox drafts when linked providers only send a view-only message", async () => {
+    const client = createMockEmailProvider();
+    vi.mocked(getMessagingRuleNotificationResult).mockResolvedValueOnce({
+      delivered: true,
+      kind: "view_only",
+    });
+
+    await runActionFunction({
+      client,
+      email,
+      action: {
+        id: "action-1",
+        type: ActionType.DRAFT_EMAIL,
+        messagingChannelId: "channel-1",
+        content: "Draft in chat",
+      },
+      userEmail: "user@example.com",
+      userId: "user-1",
+      emailAccountId: "account-1",
+      executedRule: {
+        id: "executed-rule-1",
+        threadId: "thread-1",
+        emailAccountId: "account-1",
+        ruleId: "rule-1",
+        actionItems: [{ type: ActionType.DRAFT_EMAIL }],
+      } as any,
+      logger,
+    });
+
+    expect(client.draftEmail).toHaveBeenCalled();
+  });
+
+  it("throws when chat draft delivery cannot be completed", async () => {
+    const client = createMockEmailProvider();
+    vi.mocked(sendMessagingRuleNotification).mockResolvedValueOnce(false);
+
+    await expect(
+      runActionFunction({
+        client,
+        email,
+        action: {
+          id: "action-1",
+          type: ActionType.DRAFT_MESSAGING_CHANNEL,
+          messagingChannelId: "channel-1",
+          content: "Draft in chat",
+        },
+        userEmail: "user@example.com",
+        userId: "user-1",
+        emailAccountId: "account-1",
+        executedRule: {
+          id: "executed-rule-1",
+          threadId: "thread-1",
+          emailAccountId: "account-1",
+          ruleId: "rule-1",
+        } as any,
+        logger,
+      }),
+    ).rejects.toThrow("Failed to deliver DRAFT_MESSAGING_CHANNEL notification");
+  });
+
+  it("sends NOTIFY_MESSAGING_CHANNEL actions through the messaging notification path", async () => {
+    const client = createMockEmailProvider();
+
+    await runActionFunction({
+      client,
+      email,
+      action: {
+        id: "action-1",
+        type: ActionType.NOTIFY_MESSAGING_CHANNEL,
+        messagingChannelId: "channel-1",
+      },
+      userEmail: "user@example.com",
+      userId: "user-1",
+      emailAccountId: "account-1",
+      executedRule: {
+        id: "executed-rule-1",
+        threadId: "thread-1",
+        emailAccountId: "account-1",
+        ruleId: "rule-1",
+      } as any,
+      logger,
+    });
+
+    expect(sendMessagingRuleNotification).toHaveBeenCalledWith({
+      executedActionId: "action-1",
+      email,
+      logger: expect.anything(),
+    });
+  });
+
+  it("throws when notify messaging actions are missing a channel id", async () => {
+    const client = createMockEmailProvider();
+
+    await expect(
+      runActionFunction({
+        client,
+        email,
+        action: {
+          id: "action-1",
+          type: ActionType.NOTIFY_MESSAGING_CHANNEL,
+          messagingChannelId: null,
+        },
+        userEmail: "user@example.com",
+        userId: "user-1",
+        emailAccountId: "account-1",
+        executedRule: {
+          id: "executed-rule-1",
+          threadId: "thread-1",
+          emailAccountId: "account-1",
+          ruleId: "rule-1",
+        } as any,
+        logger,
+      }),
+    ).rejects.toThrow("Missing messaging channel for NOTIFY_MESSAGING_CHANNEL");
   });
 
   it("passes static attachments into replies", async () => {

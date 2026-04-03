@@ -8,10 +8,17 @@ import {
   disconnectChannelBody,
   linkSlackWorkspaceBody,
   createMessagingLinkCodeBody,
+  toggleRuleChannelBody,
 } from "@/utils/actions/messaging-channels.validation";
 import prisma from "@/utils/prisma";
 import { SafeError } from "@/utils/error";
-import { MessagingProvider } from "@/generated/prisma/enums";
+import { ActionType, MessagingProvider } from "@/generated/prisma/enums";
+import { hasMessagingDeliveryTarget } from "@/utils/messaging/delivery-target";
+
+const MESSAGING_ACTION_TYPES = [
+  ActionType.NOTIFY_MESSAGING_CHANNEL,
+  ActionType.DRAFT_MESSAGING_CHANNEL,
+] as const;
 import { generateMessagingLinkCode } from "@/utils/messaging/chat-sdk/link-code";
 import { env } from "@/env";
 import { getChannelInfo } from "@/utils/messaging/providers/slack/channels";
@@ -87,6 +94,7 @@ export const updateSlackChannelAction = actionClient
         await sendChannelConfirmation({
           accessToken: channel.accessToken,
           channelId: targetId,
+          botUserId: channel.botUserId,
         });
       } catch (error) {
         logger.error("Failed to send channel confirmation", { error });
@@ -116,7 +124,7 @@ export const updateChannelFeaturesAction = actionClient
 
       const enablingFeature =
         sendMeetingBriefs === true || sendDocumentFilings === true;
-      if (enablingFeature && !channel.channelId) {
+      if (enablingFeature && !hasMessagingDeliveryTarget(channel)) {
         throw new SafeError(
           "Please select a target channel before enabling features",
         );
@@ -294,6 +302,85 @@ export const createMessagingLinkCodeAction = actionClient
       ...(botUrl ? { botUrl } : {}),
     };
   });
+
+export const toggleRuleChannelAction = actionClient
+  .metadata({ name: "toggleRuleChannel" })
+  .inputSchema(toggleRuleChannelBody)
+  .action(
+    async ({
+      ctx: { emailAccountId },
+      parsedInput: {
+        ruleId,
+        messagingChannelId,
+        enabled,
+        actionType: requestedType,
+      },
+    }) => {
+      const [rule, channel] = await Promise.all([
+        prisma.rule.findUnique({
+          where: { id: ruleId },
+          select: { emailAccountId: true },
+        }),
+        prisma.messagingChannel.findUnique({
+          where: { id: messagingChannelId },
+          select: {
+            emailAccountId: true,
+            isConnected: true,
+            provider: true,
+            teamId: true,
+            channelId: true,
+            providerUserId: true,
+          },
+        }),
+      ]);
+
+      if (!rule || rule.emailAccountId !== emailAccountId) {
+        throw new SafeError("Rule not found");
+      }
+      if (!channel || channel.emailAccountId !== emailAccountId) {
+        throw new SafeError("Messaging channel not found");
+      }
+
+      const actionType: ActionType =
+        requestedType ?? ActionType.NOTIFY_MESSAGING_CHANNEL;
+
+      if (enabled) {
+        if (!channel.isConnected) {
+          throw new SafeError("Messaging channel is not connected");
+        }
+        if (!hasMessagingDeliveryTarget(channel)) {
+          throw new SafeError(
+            "Please select a target channel before enabling notifications",
+          );
+        }
+
+        // Remove any existing messaging channel actions for this rule+channel
+        await prisma.action.deleteMany({
+          where: {
+            ruleId,
+            messagingChannelId,
+            type: { in: [...MESSAGING_ACTION_TYPES] },
+          },
+        });
+
+        await prisma.action.create({
+          data: {
+            type: actionType,
+            ruleId,
+            messagingChannelId,
+          },
+        });
+      } else {
+        await prisma.action.deleteMany({
+          where: {
+            ruleId,
+            messagingChannelId,
+            type: { in: [...MESSAGING_ACTION_TYPES] },
+          },
+        });
+      }
+    },
+  );
 
 async function getTelegramBotUrl() {
   if (!env.TELEGRAM_BOT_TOKEN) return undefined;

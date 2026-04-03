@@ -40,6 +40,10 @@ import type { AssistantPendingEmailActionType } from "@/utils/actions/assistant-
 import { aiProcessAssistantChat } from "@/utils/ai/assistant/chat";
 import { getRecentChatMemories } from "@/utils/ai/assistant/get-recent-chat-memories";
 import { getInboxStatsForChatContext } from "@/utils/ai/assistant/get-inbox-stats-for-chat-context";
+import {
+  mergeSeenRulesRevision,
+  saveLastSeenRulesRevision,
+} from "@/utils/ai/assistant/chat-seen-rules-revision";
 import { createScopedLogger, type Logger } from "@/utils/logger";
 import { consumeMessagingLinkCode } from "@/utils/messaging/chat-sdk/link-code-consume";
 import type { MessagingPlatform } from "@/utils/messaging/platforms";
@@ -51,9 +55,18 @@ import {
   getHelpText,
   isHelpCommand,
 } from "@/utils/messaging/prompt-commands";
+import {
+  handleSlackRuleNotificationAction,
+  handleSlackRuleNotificationModalSubmit,
+  SLACK_DRAFT_EDIT_MODAL_ID,
+  SLACK_RULE_NOTIFICATION_ACTION_IDS,
+} from "@/utils/messaging/rule-notifications";
 import { isDuplicateError } from "@/utils/prisma-helpers";
 import prisma from "@/utils/prisma";
-import { getEmailUrlForMessage } from "@/utils/url";
+import {
+  getEmailUrlForMessage,
+  getEmailUrlForOptionalMessage,
+} from "@/utils/url";
 import { getEmailAccountWithAi } from "@/utils/user/get";
 
 const MAX_CHAT_CONTEXT_MESSAGES = 12;
@@ -450,6 +463,22 @@ function registerMessagingHandlers({
     },
   );
 
+  bot.onAction([...SLACK_RULE_NOTIFICATION_ACTION_IDS], async (event) => {
+    const handlerLogger = getHandlerLogger();
+    await handleSlackRuleNotificationAction({
+      event,
+      logger: handlerLogger,
+    });
+  });
+
+  bot.onModalSubmit(SLACK_DRAFT_EDIT_MODAL_ID, async (event) => {
+    const handlerLogger = getHandlerLogger();
+    return handleSlackRuleNotificationModalSubmit({
+      event,
+      logger: handlerLogger,
+    });
+  });
+
   if (adapters.slack) {
     bot.onAssistantThreadStarted(async ({ channelId, threadTs }) => {
       try {
@@ -575,9 +604,15 @@ async function processMessagingAssistantMessage({
       update: {},
       select: {
         id: true,
+        lastSeenRulesRevision: true,
         messages: {
           orderBy: { createdAt: "desc" },
           take: MAX_CHAT_CONTEXT_MESSAGES,
+        },
+        compactions: {
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { id: true },
         },
       },
     });
@@ -649,6 +684,7 @@ async function processMessagingAssistantMessage({
       }
 
       const inboxStats = await inboxStatsPromise;
+      let seenRulesRevision: number | null = null;
       const result = await aiProcessAssistantChat({
         messages: await convertToModelMessages([
           ...existingMessages,
@@ -657,10 +693,19 @@ async function processMessagingAssistantMessage({
         emailAccountId: context.emailAccountId,
         user: emailAccountUser,
         chatId: chat.id,
+        chatLastSeenRulesRevision: chat.lastSeenRulesRevision,
+        chatHasHistory:
+          existingMessages.length > 0 || chat.compactions.length > 0,
         memories: await memoriesPromise,
         inboxStats,
         responseSurface: "messaging",
         messagingPlatform: context.provider,
+        onRulesStateExposed: (rulesRevision) => {
+          seenRulesRevision = mergeSeenRulesRevision(
+            seenRulesRevision,
+            rulesRevision,
+          );
+        },
         logger: threadLogger,
       });
 
@@ -705,6 +750,14 @@ async function processMessagingAssistantMessage({
           return true;
         }
         throw error;
+      }
+
+      if (seenRulesRevision != null) {
+        await saveLastSeenRulesRevision({
+          chatId: chat.id,
+          rulesRevision: seenRulesRevision,
+          logger: threadLogger,
+        });
       }
 
       if (pendingToolPart) {
@@ -882,6 +935,12 @@ async function handlePendingEmailConfirmAction({
     return;
   }
 
+  const pendingToolPart = await getPendingEmailToolPartForAction({
+    chatId,
+    chatMessageId: pendingAction.chatMessageId,
+    toolCallId: pendingAction.toolCallId,
+  });
+
   try {
     const confirmation = await confirmAssistantEmailActionForAccount({
       chatId,
@@ -898,6 +957,20 @@ async function handlePendingEmailConfirmAction({
       accountEmail: emailAccount.email,
       accountProvider: emailAccount.account.provider,
     });
+
+    if (
+      pendingToolPart &&
+      (await replacePendingEmailConfirmationCard({
+        accountEmail: emailAccount.email,
+        accountProvider: emailAccount.account.provider,
+        confirmationResult: confirmation.confirmationResult,
+        event,
+        logger,
+        part: pendingToolPart,
+      }))
+    ) {
+      return;
+    }
 
     await postPendingEmailActionFeedback({
       event,
@@ -981,6 +1054,44 @@ async function postPendingEmailCard({
       error,
       provider,
       actionType,
+    });
+    return false;
+  }
+}
+
+async function replacePendingEmailConfirmationCard({
+  accountEmail,
+  accountProvider,
+  confirmationResult,
+  event,
+  logger,
+  part,
+}: {
+  accountEmail?: string | null;
+  accountProvider?: string | null;
+  confirmationResult?: {
+    messageId?: string | null;
+    threadId?: string | null;
+  } | null;
+  event: ActionEvent;
+  logger: Logger;
+  part: PendingEmailToolPart;
+}) {
+  try {
+    await event.adapter.editMessage(
+      event.threadId,
+      event.messageId,
+      buildHandledPendingEmailCard({
+        accountEmail,
+        accountProvider,
+        confirmationResult,
+        part,
+      }),
+    );
+    return true;
+  } catch (error) {
+    logger.warn("Failed to replace messaging pending email confirmation card", {
+      error,
     });
     return false;
   }
@@ -1116,12 +1227,103 @@ function buildPendingEmailSuccessFeedback({
   accountEmail?: string | null;
   accountProvider?: string | null;
 }) {
+  const emailUrl = getEmailUrlForOptionalMessage({
+    messageId: confirmationResult?.messageId,
+    threadId: confirmationResult?.threadId,
+    emailAddress: accountEmail,
+    provider: accountProvider || undefined,
+  });
+  if (!emailUrl) return "Sent.";
+
+  return `Sent. Open message: ${emailUrl}`;
+}
+
+function buildHandledPendingEmailCard({
+  accountEmail,
+  accountProvider,
+  confirmationResult,
+  part,
+}: {
+  accountEmail?: string | null;
+  accountProvider?: string | null;
+  confirmationResult?: {
+    messageId?: string | null;
+    threadId?: string | null;
+  } | null;
+  part: PendingEmailToolPart;
+}) {
+  const actionType = pendingActionTypeFromToolPartType(part.type);
+  const subject = part.output?.pendingAction?.subject?.trim();
+  const to = part.output?.pendingAction?.to?.trim();
+  const referenceFrom = part.output?.reference?.from?.trim() || undefined;
+  const referenceSubject = part.output?.reference?.subject?.trim() || undefined;
+  const summary = buildPendingEmailSummary({
+    actionType,
+    to,
+    subject,
+    referenceFrom,
+    referenceSubject,
+  });
+  const preview = buildPendingEmailPreview(part);
+  const children: CardChild[] = [CardText(summary)];
+
+  if (preview) {
+    children.push(CardText(preview));
+  }
+
+  children.push(
+    CardText(`Status: ${getPendingEmailHandledStatus(actionType)}`),
+  );
+
+  const openText = getPendingEmailHandledOpenText({
+    accountEmail,
+    accountProvider,
+    confirmationResult,
+  });
+  if (openText) {
+    children.push(CardText(openText));
+  }
+
+  return Card({
+    title: getPendingEmailHandledTitle(actionType),
+    children,
+  });
+}
+
+export function getPendingEmailHandledTitle(
+  actionType: AssistantPendingEmailActionType,
+) {
+  if (actionType === "send_email") return "Email sent";
+  if (actionType === "reply_email") return "Reply sent";
+  return "Email forwarded";
+}
+
+export function getPendingEmailHandledStatus(
+  actionType: AssistantPendingEmailActionType,
+) {
+  if (actionType === "send_email") return "Email sent.";
+  if (actionType === "reply_email") return "Reply sent.";
+  return "Email forwarded.";
+}
+
+export function getPendingEmailHandledOpenText({
+  accountEmail,
+  accountProvider,
+  confirmationResult,
+}: {
+  accountEmail?: string | null;
+  accountProvider?: string | null;
+  confirmationResult?: {
+    messageId?: string | null;
+    threadId?: string | null;
+  } | null;
+}) {
   const messageId = confirmationResult?.messageId || undefined;
   const threadId = confirmationResult?.threadId || undefined;
   const resolvedMessageId = messageId || threadId;
   const resolvedThreadId = threadId || messageId;
 
-  if (!resolvedMessageId || !resolvedThreadId) return "Sent.";
+  if (!resolvedMessageId || !resolvedThreadId) return null;
 
   const emailUrl = getEmailUrlForMessage(
     resolvedMessageId,
@@ -1131,7 +1333,7 @@ function buildPendingEmailSuccessFeedback({
   );
   const mailbox = accountProvider === "microsoft" ? "Outlook" : "Gmail";
 
-  return `Sent. Open in ${mailbox}: ${emailUrl}`;
+  return `Open in ${mailbox}: ${emailUrl}`;
 }
 
 function getSlackTeamIdFromActionRaw(raw: unknown): string | null {
@@ -1339,6 +1541,47 @@ async function resolvePendingEmailActionFromToken({
         toolCallId: part.toolCallId,
       };
     }
+  }
+
+  return null;
+}
+
+async function getPendingEmailToolPartForAction({
+  chatId,
+  chatMessageId,
+  toolCallId,
+}: {
+  chatId: string;
+  chatMessageId: string;
+  toolCallId: string;
+}): Promise<PendingEmailToolPart | null> {
+  const chatMessage = await prisma.chatMessage.findFirst({
+    where: { id: chatMessageId, chatId },
+    select: { parts: true },
+  });
+
+  if (!chatMessage || !Array.isArray(chatMessage.parts)) return null;
+
+  return getEmailToolPartByToolCallId(chatMessage.parts, toolCallId);
+}
+
+function getEmailToolPartByToolCallId(
+  parts: unknown[],
+  toolCallId: string,
+): PendingEmailToolPart | null {
+  for (let index = parts.length - 1; index >= 0; index -= 1) {
+    const part = parts[index] as PendingEmailToolPart | undefined;
+    if (!part || part.state !== "output-available") continue;
+    if (part.toolCallId !== toolCallId) continue;
+    if (
+      part.type !== "tool-sendEmail" &&
+      part.type !== "tool-replyEmail" &&
+      part.type !== "tool-forwardEmail"
+    ) {
+      continue;
+    }
+
+    return part;
   }
 
   return null;

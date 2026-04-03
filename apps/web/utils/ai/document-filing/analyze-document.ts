@@ -25,8 +25,6 @@ const documentAnalysisSchema = z
       ),
     confidence: z
       .number()
-      .min(0)
-      .max(1)
       .describe(
         "Confidence score from 0 to 1. Use 0.9+ only when very certain.",
       ),
@@ -80,6 +78,7 @@ export async function analyzeDocument({
     emailAccount,
     label: "Document filing",
     modelOptions,
+    promptHardening: { trust: "untrusted", level: "compact" },
   });
 
   const result = await generateObject({

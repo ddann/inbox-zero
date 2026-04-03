@@ -59,8 +59,8 @@ import {
 import { sortRulesForAutomation } from "@/utils/rule/sort";
 import {
   STEP_KEYS,
-  getStepNumber,
-} from "@/app/(app)/[emailAccountId]/onboarding/steps";
+  getOnboardingStepHref,
+} from "@/app/(app)/[emailAccountId]/onboarding/onboardingFlow";
 
 export function Rules({
   showAddRuleButton = true,
@@ -293,57 +293,61 @@ export function Rules({
                                   History
                                 </Link>
                               </DropdownMenuItem>
-                              <DropdownMenuSeparator />
+                              {!rule.systemType && (
+                                <>
+                                  <DropdownMenuSeparator />
 
-                              <DropdownMenuItem
-                                onClick={async () => {
-                                  const yes = confirm(
-                                    `Are you sure you want to delete the rule "${rule.name}"?`,
-                                  );
-                                  if (yes) {
-                                    toast.promise(
-                                      async () => {
-                                        const res = await deleteRuleAction(
-                                          emailAccountId,
-                                          { id: rule.id },
+                                  <DropdownMenuItem
+                                    onClick={async () => {
+                                      const yes = confirm(
+                                        `Are you sure you want to delete the rule "${rule.name}"?`,
+                                      );
+                                      if (yes) {
+                                        toast.promise(
+                                          async () => {
+                                            const res = await deleteRuleAction(
+                                              emailAccountId,
+                                              { id: rule.id },
+                                            );
+
+                                            if (
+                                              res?.serverError ||
+                                              res?.validationErrors
+                                            ) {
+                                              throw new Error(
+                                                res?.serverError ||
+                                                  "There was an error deleting your rule",
+                                              );
+                                            }
+
+                                            mutate(
+                                              (currentRules) =>
+                                                currentRules?.filter(
+                                                  (currentRule) =>
+                                                    currentRule.id !== rule.id,
+                                                ),
+                                              { revalidate: false },
+                                            );
+                                            mutate();
+                                          },
+                                          {
+                                            loading: "Deleting rule...",
+                                            success: "Rule deleted",
+                                            error: (error) =>
+                                              `Error deleting rule. ${error.message}`,
+                                            finally: () => {
+                                              mutate();
+                                            },
+                                          },
                                         );
-
-                                        if (
-                                          res?.serverError ||
-                                          res?.validationErrors
-                                        ) {
-                                          throw new Error(
-                                            res?.serverError ||
-                                              "There was an error deleting your rule",
-                                          );
-                                        }
-
-                                        mutate(
-                                          (currentRules) =>
-                                            currentRules?.filter(
-                                              (currentRule) =>
-                                                currentRule.id !== rule.id,
-                                            ),
-                                          { revalidate: false },
-                                        );
-                                        mutate();
-                                      },
-                                      {
-                                        loading: "Deleting rule...",
-                                        success: "Rule deleted",
-                                        error: (error) =>
-                                          `Error deleting rule. ${error.message}`,
-                                        finally: () => {
-                                          mutate();
-                                        },
-                                      },
-                                    );
-                                  }
-                                }}
-                              >
-                                <Trash2Icon className="mr-2 size-4" />
-                                Delete
-                              </DropdownMenuItem>
+                                      }
+                                    }}
+                                  >
+                                    <Trash2Icon className="mr-2 size-4" />
+                                    Delete
+                                  </DropdownMenuItem>
+                                </>
+                              )}
                             </DropdownMenuContent>
                           </DropdownMenu>
                         )}
@@ -391,9 +395,11 @@ export function ActionBadges({
   provider: string;
   labels: Array<{ id: string; name: string }>;
 }) {
+  const visibleActions = getVisibleActions(actions);
+
   return (
     <div className="flex gap-1 sm:gap-2 flex-wrap min-w-0 justify-start">
-      {sortActionsByPriority(actions).map((action) => {
+      {visibleActions.map((action) => {
         const Icon = getActionIcon(action.type);
 
         return (
@@ -411,6 +417,17 @@ export function ActionBadges({
   );
 }
 
+function getVisibleActions<T extends { type: ActionType }>(actions: T[]): T[] {
+  const sortedActions = sortActionsByPriority(actions);
+  const hasEmailDraft = sortedActions.some(
+    (action) => action.type === "DRAFT_EMAIL",
+  );
+
+  return sortedActions.filter(
+    (action) => !(action.type === "DRAFT_MESSAGING_CHANNEL" && hasEmailDraft),
+  );
+}
+
 function NoRules() {
   const { emailAccountId } = useAccount();
 
@@ -421,10 +438,7 @@ function NoRules() {
         <div>
           <Button asChild size="sm">
             <Link
-              href={prefixPath(
-                emailAccountId,
-                `/onboarding?step=${getStepNumber(STEP_KEYS.LABELS)}`,
-              )}
+              href={getOnboardingStepHref(emailAccountId, STEP_KEYS.LABELS)}
             >
               Set up default rules
             </Link>

@@ -12,6 +12,7 @@ import {
   MessagingProvider,
 } from "@/generated/prisma/enums";
 import prisma from "@/utils/prisma";
+import { hasMessagingDeliveryTarget } from "@/utils/messaging/delivery-target";
 import {
   getNextAutomationJobRunAt,
   validateAutomationCronExpression,
@@ -104,6 +105,7 @@ export const saveAutomationJobAction = actionClient
           provider: true,
           isConnected: true,
           accessToken: true,
+          teamId: true,
           providerUserId: true,
           channelId: true,
         },
@@ -176,6 +178,7 @@ export const triggerTestCheckInAction = actionClient
             provider: true,
             isConnected: true,
             accessToken: true,
+            teamId: true,
             providerUserId: true,
             channelId: true,
           },
@@ -232,6 +235,7 @@ async function getDefaultMessagingChannel(emailAccountId: string) {
       provider: true,
       isConnected: true,
       accessToken: true,
+      teamId: true,
       providerUserId: true,
       channelId: true,
     },
@@ -255,6 +259,7 @@ function getAutomationMessagingChannelValidationError(channel: {
   provider: MessagingProvider;
   isConnected: boolean;
   accessToken: string | null;
+  teamId?: string | null;
   providerUserId: string | null;
   channelId: string | null;
 }) {
@@ -268,7 +273,7 @@ function getAutomationMessagingChannelValidationError(channel: {
     return "Slack channel is not connected";
   }
 
-  if (!channel.providerUserId && !channel.channelId) {
+  if (!hasMessagingDeliveryTarget(channel)) {
     return "Select a messaging destination first";
   }
 

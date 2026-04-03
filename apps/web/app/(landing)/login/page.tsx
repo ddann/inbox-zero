@@ -5,14 +5,13 @@ import Link from "next/link";
 import { LoginForm } from "@/app/(landing)/login/LoginForm";
 import { getRequiresReconsentDescription } from "@/app/(landing)/login/messages";
 import { auth } from "@/utils/auth";
-import { isLocalAuthBypassEnabled } from "@/utils/auth/local-bypass-config";
 import { isGoogleOauthEmulationEnabled } from "@/utils/google/oauth";
 import { AlertBasic } from "@/components/Alert";
 import { Button } from "@/components/ui/button";
 import { WELCOME_PATH } from "@/utils/config";
 import { CrispChatLoggedOutVisible } from "@/components/CrispChat";
 import { MutedText } from "@/components/Typography";
-import { isInternalPath } from "@/utils/path";
+import { normalizeInternalPath } from "@/utils/path";
 import {
   BRAND_NAME,
   SUPPORT_EMAIL,
@@ -31,12 +30,10 @@ export default async function AuthenticationPage(props: {
 }) {
   const searchParams = await props.searchParams;
   const session = await auth();
+  const nextPath = normalizeInternalPath(searchParams?.next);
+
   if (session?.user && !searchParams?.error) {
-    if (searchParams?.next && isInternalPath(searchParams.next)) {
-      redirect(searchParams.next);
-    } else {
-      redirect(WELCOME_PATH);
-    }
+    redirect(nextPath ?? WELCOME_PATH);
   }
 
   return (
@@ -51,7 +48,6 @@ export default async function AuthenticationPage(props: {
         <div className="mt-4">
           <Suspense>
             <LoginForm
-              showLocalBypass={isLocalAuthBypassEnabled()}
               useGoogleOauthEmulator={isGoogleOauthEmulationEnabled()}
             />
           </Suspense>

@@ -203,16 +203,22 @@ export const enableDraftRepliesAction = actionClient
         return;
       }
 
-      const rule =
-        existingRule ||
-        (await toggleRule({
-          emailAccountId,
-          enabled: enable,
-          systemType: SystemType.TO_REPLY,
-          provider,
-          ruleId: undefined,
-          logger,
-        }));
+      const rule = existingRule
+        ? existingRule.enabled === enable
+          ? existingRule
+          : await setRuleEnabled({
+              ruleId: existingRule.id,
+              emailAccountId,
+              enabled: enable,
+            })
+        : await toggleRule({
+            emailAccountId,
+            enabled: enable,
+            systemType: SystemType.TO_REPLY,
+            provider,
+            ruleId: undefined,
+            logger,
+          });
 
       if (enable) {
         const alreadyDraftingReplies = rule.actions.find(
@@ -270,6 +276,11 @@ export const deleteRuleAction = actionClient
     if (!rule) return; // already deleted
     if (rule.emailAccountId !== emailAccountId)
       throw new SafeError("You don't have permission to delete this rule");
+    if (rule.systemType) {
+      throw new SafeError(
+        "Default rules cannot be deleted. Disable them instead.",
+      );
+    }
 
     try {
       await deleteRule({
@@ -600,6 +611,7 @@ export const copyRulesFromAccountAction = actionClientUser
         if (existingRuleId) {
           await replaceRuleWithResolvedActions({
             ruleId: existingRuleId,
+            emailAccountId: targetEmailAccountId,
             data: {
               instructions: sourceRule.instructions,
               enabled: sourceRule.enabled,
@@ -758,6 +770,7 @@ async function toggleRule({
 
 function mapActionToSanitizedFields(action: {
   type: ActionType;
+  messagingChannelId?: string | null;
   labelId?: {
     name?: string | null;
     value?: string | null;
@@ -776,6 +789,7 @@ function mapActionToSanitizedFields(action: {
 }) {
   const sanitized = sanitizeActionFields({
     type: action.type,
+    messagingChannelId: action.messagingChannelId ?? null,
     label: action.labelId?.name,
     labelId: action.labelId?.value,
     subject: action.subject?.value,
@@ -804,6 +818,7 @@ function mapActionToSanitizedFields(action: {
       webhookUrl: sanitized.url ?? null,
       folderName: sanitized.folderName ?? null,
     },
+    messagingChannelId: sanitized.messagingChannelId ?? null,
     labelId: sanitized.labelId ?? null,
     folderId: sanitized.folderId ?? null,
     delayInMinutes: sanitized.delayInMinutes ?? null,
@@ -1052,6 +1067,7 @@ export const importRulesAction = actionClient
           if (existingRuleId) {
             await replaceRuleWithResolvedActions({
               ruleId: existingRuleId,
+              emailAccountId,
               data: {
                 instructions: rule.instructions,
                 enabled: rule.enabled ?? true,

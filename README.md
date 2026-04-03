@@ -30,10 +30,6 @@
 
 To help you spend less time in your inbox, so you can focus on what matters most.
 
-<br />
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Felie222%2Finbox-zero&env=AUTH_SECRET,GOOGLE_CLIENT_ID,GOOGLE_CLIENT_SECRET,MICROSOFT_CLIENT_ID,MICROSOFT_CLIENT_SECRET,EMAIL_ENCRYPT_SECRET,EMAIL_ENCRYPT_SALT,UPSTASH_REDIS_URL,UPSTASH_REDIS_TOKEN,GOOGLE_PUBSUB_TOPIC_NAME,DATABASE_URL,NEXT_PUBLIC_BASE_URL)
-
 ## Features
 
 - **AI Personal Assistant:** Organizes your inbox and pre-drafts replies in your tone and style.
@@ -118,6 +114,34 @@ pnpm dev
 ```
 
 Open http://localhost:3000
+
+After `pnpm install`, if you want to use the local Google emulator, start it with:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile google-emulator up -d
+```
+
+Then point `apps/web/.env` at it with:
+
+```bash
+GOOGLE_BASE_URL=http://localhost:4002
+GOOGLE_CLIENT_ID=emulate-google-client.apps.googleusercontent.com
+GOOGLE_CLIENT_SECRET=emulate-google-secret
+```
+
+If you want to use the local Microsoft emulator, start it with:
+
+```bash
+docker compose -f docker-compose.dev.yml --profile microsoft-emulator up -d
+```
+
+Then point `apps/web/.env` at it with:
+
+```bash
+MICROSOFT_BASE_URL=http://localhost:4003
+MICROSOFT_CLIENT_ID=emulate-microsoft-client-id
+MICROSOFT_CLIENT_SECRET=emulate-microsoft-secret
+```
 
 See the **[Contributing Guide](https://docs.getinboxzero.com/contributing)** for more details including devcontainer setup.
 

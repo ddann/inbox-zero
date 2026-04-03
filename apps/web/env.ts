@@ -31,7 +31,7 @@ const getBaseUrl = (): string | undefined => {
   return process.env.NEXT_PUBLIC_BASE_URL;
 };
 
-export const env = createEnv({
+const parsedEnv = createEnv({
   server: {
     NODE_ENV: z.enum(["development", "production", "test"]),
     DATABASE_URL: z.string().url(),
@@ -44,10 +44,30 @@ export const env = createEnv({
 
     AUTH_SECRET: z.string().optional(),
     NEXTAUTH_SECRET: z.string().optional(),
+    AUTH_ALLOWED_EMAILS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
+    AUTH_ALLOWED_EMAIL_DOMAINS: z
+      .string()
+      .optional()
+      .transform((value) =>
+        value
+          ?.split(",")
+          .map((entry) => entry.trim())
+          .filter(Boolean),
+      ),
     GOOGLE_CLIENT_ID: z.string().min(1),
     GOOGLE_CLIENT_SECRET: z.string().min(1),
     // Local Google emulation only; used for both OAuth and resource APIs.
     GOOGLE_BASE_URL: z.string().url().optional(),
+    // Local Microsoft emulation only; used for both OAuth and Microsoft Graph APIs.
+    MICROSOFT_BASE_URL: z.string().url().optional(),
     MICROSOFT_CLIENT_ID: z.string().optional(),
     MICROSOFT_CLIENT_SECRET: z.string().optional(),
     MICROSOFT_TENANT_ID: z.string().optional().default("common"),
@@ -58,7 +78,7 @@ export const env = createEnv({
       // custom is deprecated
       .enum([...llmProviderEnum.options, "custom"]),
     DEFAULT_LLM_MODEL: z.string().optional(),
-    DEFAULT_LLM_FALLBACKS: z.string().optional(), // Comma-separated provider:model chain; explicit model required (e.g., "openrouter:anthropic/claude-sonnet-4.5,openai:gpt-5.1")
+    DEFAULT_LLM_FALLBACKS: z.string().optional(), // Comma-separated provider:model chain; explicit model required (e.g., "openrouter:anthropic/claude-sonnet-4.6,openai:gpt-5.1")
     DEFAULT_OPENROUTER_PROVIDERS: z.string().optional(), // Comma-separated list of OpenRouter providers for default model (e.g., "Google Vertex,Anthropic")
     // Set this to a cheaper model like Gemini Flash
     ECONOMY_LLM_PROVIDER: llmProviderEnum.optional(),
@@ -123,6 +143,7 @@ export const env = createEnv({
     QSTASH_TOKEN: z.string().optional(),
     QSTASH_CURRENT_SIGNING_KEY: z.string().optional(),
     QSTASH_NEXT_SIGNING_KEY: z.string().optional(),
+    QUEUE_BACKEND: z.enum(["bullmq", "internal", "qstash"]).optional(),
 
     GOOGLE_PUBSUB_TOPIC_NAME: z.string().min(1),
     GOOGLE_PUBSUB_VERIFICATION_TOKEN: z.string().optional(),
@@ -183,6 +204,7 @@ export const env = createEnv({
     WHITELIST_FROM: z.string().optional(),
     HEALTH_API_KEY: z.string().optional(),
     OAUTH_PROXY_URL: z.string().url().optional(),
+    IMAGE_PROXY_SIGNING_SECRET: z.string().min(16).optional(),
     // Set to true on the server that acts as the OAuth proxy (e.g., staging)
     IS_OAUTH_PROXY_SERVER: booleanString.optional().default(false),
     // Additional trusted origins for CORS (comma-separated, supports wildcards like https://*.vercel.app)
@@ -197,7 +219,6 @@ export const env = createEnv({
       ),
     // Mobile auth trusted origin, e.g. inboxzero://
     MOBILE_AUTH_ORIGIN: z.string().trim().min(1).optional(),
-    LOCAL_AUTH_BYPASS_ENABLED: booleanString.optional().default(false),
     AUTO_JOIN_ORGANIZATION_ENABLED: booleanString.optional().default(false),
     AUTO_ENABLE_ORG_ANALYTICS: booleanString.optional().default(false),
 
@@ -251,9 +272,11 @@ export const env = createEnv({
     NEXT_PUBLIC_POSTHOG_HERO_AB: z.string().optional(),
     NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID: z.string().optional(),
     NEXT_PUBLIC_BASE_URL: z.string(),
+    NEXT_PUBLIC_IMAGE_PROXY_BASE_URL: z.string().url().optional(),
     NEXT_PUBLIC_BRAND_NAME: z.string().trim().min(1).default("Inbox Zero"),
     NEXT_PUBLIC_BRAND_LOGO_URL: z.string().optional(),
     NEXT_PUBLIC_BRAND_ICON_URL: z.string().optional().default("/icon.png"),
+    NEXT_PUBLIC_SLACK_BOT_NAME: z.string().trim().min(1).default("Inbox Zero"),
     NEXT_PUBLIC_CONTACTS_ENABLED: booleanString.optional().default(false),
     NEXT_PUBLIC_EMAIL_SEND_ENABLED: booleanString.default(true),
     NEXT_PUBLIC_SENTRY_DSN: z.string().optional(),
@@ -335,9 +358,12 @@ export const env = createEnv({
     NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID:
       process.env.NEXT_PUBLIC_POSTHOG_ONBOARDING_SURVEY_ID,
     NEXT_PUBLIC_BASE_URL: getBaseUrl(),
+    NEXT_PUBLIC_IMAGE_PROXY_BASE_URL:
+      process.env.NEXT_PUBLIC_IMAGE_PROXY_BASE_URL,
     NEXT_PUBLIC_BRAND_NAME: process.env.NEXT_PUBLIC_BRAND_NAME,
     NEXT_PUBLIC_BRAND_LOGO_URL: process.env.NEXT_PUBLIC_BRAND_LOGO_URL,
     NEXT_PUBLIC_BRAND_ICON_URL: process.env.NEXT_PUBLIC_BRAND_ICON_URL,
+    NEXT_PUBLIC_SLACK_BOT_NAME: process.env.NEXT_PUBLIC_SLACK_BOT_NAME,
     NEXT_PUBLIC_CONTACTS_ENABLED: process.env.NEXT_PUBLIC_CONTACTS_ENABLED,
     NEXT_PUBLIC_EMAIL_SEND_ENABLED: process.env.NEXT_PUBLIC_EMAIL_SEND_ENABLED,
     NEXT_PUBLIC_FREE_UNSUBSCRIBE_CREDITS:
@@ -376,3 +402,11 @@ export const env = createEnv({
     NEXT_PUBLIC_TABS_EXTENSION_ID: process.env.NEXT_PUBLIC_TABS_EXTENSION_ID,
   },
 });
+
+if (process.env.TELEGRAM_BOT_TOKEN && !process.env.TELEGRAM_BOT_SECRET_TOKEN) {
+  throw new Error(
+    "TELEGRAM_BOT_SECRET_TOKEN is required when TELEGRAM_BOT_TOKEN is set.",
+  );
+}
+
+export const env = parsedEnv;

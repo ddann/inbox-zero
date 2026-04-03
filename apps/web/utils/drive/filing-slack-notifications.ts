@@ -6,14 +6,18 @@ import {
   sendDocumentAskToSlack,
 } from "@/utils/messaging/providers/slack/send";
 import type { Logger } from "@/utils/logger";
+import { sendAutomationMessage } from "@/utils/automation-jobs/messaging";
+import { getMessagingDeliveryTargetWhere } from "@/utils/messaging/delivery-target";
 
 export async function sendFilingSlackNotifications({
   emailAccountId,
   filingId,
+  senderEmail,
   logger,
 }: {
   emailAccountId: string;
   filingId: string;
+  senderEmail?: string | null;
   logger: Logger;
 }): Promise<void> {
   const log = logger.with({ action: "sendFilingSlackNotifications", filingId });
@@ -23,11 +27,12 @@ export async function sendFilingSlackNotifications({
       emailAccountId,
       isConnected: true,
       sendDocumentFilings: true,
-      channelId: { not: null },
+      ...getMessagingDeliveryTargetWhere(),
     },
     select: {
       provider: true,
       accessToken: true,
+      teamId: true,
       channelId: true,
       providerUserId: true,
     },
@@ -47,13 +52,12 @@ export async function sendFilingSlackNotifications({
     return;
   }
 
-  const deliveryPromises: Promise<void>[] = [];
+  const deliveryPromises: Promise<unknown>[] = [];
 
   for (const channel of channels) {
-    if (!channel.accessToken) continue;
-
     switch (channel.provider) {
       case MessagingProvider.SLACK: {
+        if (!channel.accessToken) continue;
         const destination = await resolveSlackDestination({
           accessToken: channel.accessToken,
           channelId: channel.channelId,
@@ -71,6 +75,7 @@ export async function sendFilingSlackNotifications({
               channelId: destination,
               filename: filing.filename,
               reasoning: filing.reasoning,
+              senderEmail,
             }),
           );
         } else {
@@ -81,9 +86,32 @@ export async function sendFilingSlackNotifications({
               filename: filing.filename,
               folderPath: filing.folderPath,
               driveProvider: filing.driveConnection.provider,
+              senderEmail,
+              fileId: filing.fileId,
             }),
           );
         }
+        break;
+      }
+      case MessagingProvider.TEAMS:
+      case MessagingProvider.TELEGRAM: {
+        deliveryPromises.push(
+          sendAutomationMessage({
+            channel,
+            text: filing.wasAsked
+              ? formatDocumentAskText({
+                  filename: filing.filename,
+                  reasoning: filing.reasoning,
+                  senderEmail,
+                })
+              : formatDocumentFiledText({
+                  filename: filing.filename,
+                  folderPath: filing.folderPath,
+                  senderEmail,
+                }),
+            logger: log,
+          }),
+        );
         break;
       }
     }
@@ -97,4 +125,31 @@ export async function sendFilingSlackNotifications({
       reason: (failure as PromiseRejectedResult).reason,
     });
   }
+}
+
+function formatDocumentAskText({
+  filename,
+  reasoning,
+  senderEmail,
+}: {
+  filename: string;
+  reasoning: string | null;
+  senderEmail?: string | null;
+}) {
+  const fromPart = senderEmail ? ` from ${senderEmail}` : "";
+  const reasonPart = reasoning ? ` — ${reasoning}` : "";
+  return `📄 Where should I file ${filename}${fromPart}?${reasonPart}`;
+}
+
+function formatDocumentFiledText({
+  filename,
+  folderPath,
+  senderEmail,
+}: {
+  filename: string;
+  folderPath: string;
+  senderEmail?: string | null;
+}) {
+  const fromPart = senderEmail ? ` from ${senderEmail}` : "";
+  return `📨 Filed ${filename}${fromPart} to ${folderPath}`;
 }

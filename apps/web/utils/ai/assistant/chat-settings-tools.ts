@@ -8,6 +8,7 @@ import { ActionType, MessagingProvider } from "@/generated/prisma/enums";
 import { describeCronSchedule } from "@/utils/automation-jobs/describe";
 import { DEFAULT_AUTOMATION_JOB_CRON } from "@/utils/automation-jobs/defaults";
 import { SUPPORTED_AUTOMATION_MESSAGING_PROVIDERS } from "@/utils/automation-jobs/messaging-channel";
+import { hasMessagingDeliveryTarget } from "@/utils/messaging/delivery-target";
 import {
   getNextAutomationJobRunAt,
   validateAutomationCronExpression,
@@ -273,9 +274,13 @@ const accountSettingsSnapshotRawSelect = {
         },
         {
           provider: {
-            in: [MessagingProvider.TEAMS, MessagingProvider.TELEGRAM],
+            in: [MessagingProvider.TEAMS],
           },
           providerUserId: { not: null },
+        },
+        {
+          provider: MessagingProvider.TELEGRAM,
+          OR: [{ teamId: { not: "" } }, { providerUserId: { not: null } }],
         },
       ],
     },
@@ -285,6 +290,7 @@ const accountSettingsSnapshotRawSelect = {
       channelName: true,
       teamName: true,
       isConnected: true,
+      teamId: true,
       providerUserId: true,
       channelId: true,
     },
@@ -1120,9 +1126,7 @@ function buildScheduledCheckInsSnapshot(
 ) {
   const availableChannels = emailAccount.messagingChannels
     .filter(
-      (channel) =>
-        channel.isConnected &&
-        Boolean(channel.providerUserId || channel.channelId),
+      (channel) => channel.isConnected && hasMessagingDeliveryTarget(channel),
     )
     .map((channel) => ({
       id: channel.id,

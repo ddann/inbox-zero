@@ -50,6 +50,7 @@ import type { EmailLabel } from "@/providers/EmailProvider";
 import { useAccount } from "@/providers/EmailAccountProvider";
 import { isGoogleProvider } from "@/utils/email/provider-types";
 import { getEmailTerminology } from "@/utils/terminology";
+import { Tooltip } from "@/components/Tooltip";
 
 export function ActionCell<T extends Row>({
   item,
@@ -232,14 +233,24 @@ function ApproveButton<T extends Row>({
   });
 
   return (
-    <Button
-      size="sm"
-      variant={isApproved ? "green" : "ghost"}
-      onClick={onApprove}
-      disabled={!hasUnsubscribeAccess}
+    <Tooltip
+      content={
+        isApproved
+          ? "Approved sender. Keep these emails in your inbox."
+          : "Approve sender to keep these emails in your inbox."
+      }
     >
-      <ThumbsUpIcon className={`size-5 ${isApproved ? "" : "text-gray-400"}`} />
-    </Button>
+      <Button
+        size="sm"
+        variant={isApproved ? "green" : "ghost"}
+        onClick={onApprove}
+        disabled={!hasUnsubscribeAccess}
+      >
+        <ThumbsUpIcon
+          className={`size-5 ${isApproved ? "" : "text-gray-400"}`}
+        />
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -263,9 +274,9 @@ export function MoreDropdown<T extends Row>({
   const { provider } = useAccount();
   const terminology = getEmailTerminology(provider);
   const { onBulkArchive, isBulkArchiving } = useBulkArchive({
-    mutate,
     posthog,
     emailAccountId,
+    mutate,
   });
   const { onBulkDelete, isBulkDeleting } = useBulkDelete({
     mutate,
@@ -392,53 +403,3 @@ export function HeaderButton(props: {
     </Button>
   );
 }
-
-// function GroupsSubMenu({ sender }: { sender: string }) {
-//   const { data, isLoading, error } = useSWR<GroupsResponse>("/api/user/group");
-
-//   return (
-//     <DropdownMenuSubContent>
-//       {data &&
-//         (data.groups.length ? (
-//           data?.groups.map((group) => {
-//             return (
-//               <DropdownMenuItem
-//                 key={group.id}
-//                 onClick={async () => {
-//                   const result = await addGroupItemAction(emailAccountId, {
-//                     groupId: group.id,
-//                     type: GroupItemType.FROM,
-//                     value: sender,
-//                   });
-
-//                   if (result?.serverError) {
-//                     toastError({
-//                       description: `Failed to add ${sender} to ${group.name}. ${result.error}`,
-//                     });
-//                   } else {
-//                     toastSuccess({
-//                       title: "Success!",
-//                       description: `Added ${sender} to ${group.name}`,
-//                     });
-//                   }
-//                 }}
-//               >
-//                 {group.name}
-//               </DropdownMenuItem>
-//             );
-//           })
-//         ) : (
-//           <DropdownMenuItem>{`You don't have any groups yet.`}</DropdownMenuItem>
-//         ))}
-//       {isLoading && <DropdownMenuItem>Loading...</DropdownMenuItem>}
-//       {error && <DropdownMenuItem>Error loading groups</DropdownMenuItem>}
-//       <DropdownMenuSeparator />
-//       <DropdownMenuItem asChild>
-//         <Link href={prefixPath(emailAccountId, "/automation?tab=groups")} target="_blank">
-//           <PlusCircle className="mr-2 size-4" />
-//           <span>New Group</span>
-//         </Link>
-//       </DropdownMenuItem>
-//     </DropdownMenuSubContent>
-//   );
-// }
